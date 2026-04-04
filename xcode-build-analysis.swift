@@ -74,6 +74,7 @@ struct XcodeBuildAnalysisCLI {
       --format, -f VALUE                 json | html, default: json
       --mode, -m VALUE                   both | clean | integration, default: both
       --runs, -n VALUE                   Number of measured runs, default: 3
+      --skip-warm-up                     Skip the unmeasured warm-up build
       --compile-cache, -C VALUE          inherit | on | off, default: inherit
       --destination, -d VALUE            Simulator name or full xcodebuild destination
       --derived-data-path, -D VALUE      DerivedData output path
@@ -91,6 +92,7 @@ private struct CLIConfiguration {
     let outputFormat: OutputFormat
     let mode: BuildMode
     let runs: Int
+    let skipWarmUp: Bool
     let compileCacheMode: CompileCacheMode
     let destination: String?
     let derivedDataPath: String?
@@ -104,6 +106,7 @@ private struct CLIConfiguration {
         var outputFormat = OutputFormat.json
         var mode = BuildMode.both
         var runs = 3
+        var skipWarmUp = false
         var compileCacheMode = CompileCacheMode.inherit
         var destination: String?
         var derivedDataPath: String?
@@ -145,6 +148,8 @@ private struct CLIConfiguration {
                     throw CLIError("--runs must be an integer greater than or equal to 1")
                 }
                 runs = parsedRuns
+            case "--skip-warm-up":
+                skipWarmUp = true
             case "--compile-cache", "-C":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedCacheMode = CompileCacheMode(rawValue: rawValue) else {
@@ -172,6 +177,7 @@ private struct CLIConfiguration {
                 outputFormat: outputFormat,
                 mode: mode,
                 runs: runs,
+                skipWarmUp: skipWarmUp,
                 compileCacheMode: compileCacheMode,
                 destination: destination,
                 derivedDataPath: derivedDataPath,
@@ -197,6 +203,7 @@ private struct CLIConfiguration {
             outputFormat: outputFormat,
             mode: mode,
             runs: runs,
+            skipWarmUp: skipWarmUp,
             compileCacheMode: compileCacheMode,
             destination: destination,
             derivedDataPath: derivedDataPath,
@@ -271,6 +278,10 @@ private struct XcodeBuildAnalyzer {
         var results: [RunResult] = []
 
         for mode in configuration.selectedModes {
+            if mode == .clean && !configuration.skipWarmUp {
+                _ = try runXcodebuild(arguments: configuration.baseXcodebuildArguments(includeClean: true))
+            }
+
             if mode == .integration {
                 _ = try runXcodebuild(arguments: configuration.baseXcodebuildArguments(includeClean: true))
             }

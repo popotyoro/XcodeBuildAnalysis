@@ -31,6 +31,7 @@ swift xcode-build-analysis.swift \
 - `--format`, `-f`: `json` / `html`。デフォルトは `json`
 - `--mode`, `-m`: `both` / `clean` / `integration`。デフォルトは `both`
 - `--runs`, `-n`: 計測回数。デフォルトは `3`
+- `--skip-warm-up`: `clean` 計測前の未計測 warm-up build を無効化
 - `--compile-cache`, `-C`: `inherit` / `on` / `off`。デフォルトは `inherit`
 - `--destination`, `-d`: Simulator名。`iPhone 17` のように渡すと `platform=iOS Simulator,name=iPhone 17` に展開。`platform=...` の完全指定も可
 - `--derived-data-path`, `-D`: `DerivedData`の出力先
@@ -38,7 +39,7 @@ swift xcode-build-analysis.swift \
 
 ### mode の挙動
 
-- `clean`: 毎回 `xcodebuild clean build -showBuildTimingSummary` を実行
+- `clean`: デフォルトでは最初に未計測の warm-up `clean build` を1回実行し、その後に `xcodebuild clean build -showBuildTimingSummary` を指定回数ぶん計測
 - `integration`: 最初に一度だけ warm-up の `clean build` を実行し、その後は同じ `DerivedData` で `build -showBuildTimingSummary` を繰り返し計測
 - `both`: `clean` を指定回数実行した後、`integration` を指定回数実行
 

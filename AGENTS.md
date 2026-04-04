@@ -21,11 +21,13 @@ The CLI measures clean and integration builds with `xcodebuild` and outputs the 
 - `--format` / `-f` defaults to `json`
 - `--mode` / `-m` defaults to `both`
 - `--runs` / `-n` defaults to `3`
+- warm-up is enabled by default; `--skip-warm-up` disables it
 - `--compile-cache` / `-C` defaults to `inherit`
 - Supported optional flags:
   - `--format` / `-f`
   - `--mode` / `-m`
   - `--runs` / `-n`
+  - `--skip-warm-up`
   - `--compile-cache` / `-C`
   - `--destination` / `-d`
   - `--derived-data-path` / `-D`
@@ -37,7 +39,7 @@ The CLI measures clean and integration builds with `xcodebuild` and outputs the 
 
 - Use `/usr/bin/xcodebuild` directly
 - Do not use `xcrun`
-- `clean` mode runs `clean build -showBuildTimingSummary` for every measured run
+- `clean` mode runs one unmeasured warm-up `clean build` by default, then `clean build -showBuildTimingSummary` for every measured run
 - `integration` mode runs one warm-up `clean build`, then measured `build -showBuildTimingSummary` runs against the same DerivedData
 - `both` runs all clean iterations first, then all integration iterations
 - When `-d` is given as a plain simulator name such as `iPhone 17`, convert it to:

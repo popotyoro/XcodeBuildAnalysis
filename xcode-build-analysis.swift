@@ -354,50 +354,49 @@ private struct XcodeBuildAnalyzer {
 
 private enum HTMLReportRenderer {
     static func render(report: AnalysisReport) -> String {
-        let isoFormatter = ISO8601DateFormatter()
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone.current
+        dateFormatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
         let totals = report.runs.map { RunMetric(run: $0, totalDuration: $0.totalDurationSeconds) }
         let groupedRuns = Dictionary(grouping: totals, by: { $0.run.mode })
         let orderedGroups = BuildMode.displayOrder.compactMap { mode in
             groupedRuns[mode].map { (mode: mode, runs: $0.sorted(by: { $0.run.runIndex < $1.run.runIndex })) }
         }
 
-        let fastest = totals.min(by: { $0.totalDuration < $1.totalDuration })
-        let slowest = totals.max(by: { $0.totalDuration < $1.totalDuration })
-
-        let cards = orderedGroups.map { group in
-            let average = group.runs.isEmpty ? 0.0 : group.runs.map(\.totalDuration).reduce(0, +) / Double(group.runs.count)
-            return """
-            <div class="card">
-              <div class="eyebrow">\(escapeHTML(group.mode.displayName))</div>
-              <div class="metric">\(formatSeconds(average))</div>
-              <div class="caption">Average total time across \(group.runs.count) run(s)</div>
-            </div>
-            """
-        }.joined(separator: "\n")
-
-        let extremumCards = [
-            fastest.map {
-                """
-                <div class="card">
-                  <div class="eyebrow">最速Run</div>
-                  <div class="metric">\(formatSeconds($0.totalDuration))</div>
-                  <div class="caption">\(escapeHTML($0.run.mode.displayName)) \($0.run.runIndex)回目</div>
-                </div>
-                """
-            } ?? "",
-            slowest.map {
-                """
-                <div class="card">
-                  <div class="eyebrow">最遅Run</div>
-                  <div class="metric">\(formatSeconds($0.totalDuration))</div>
-                  <div class="caption">\(escapeHTML($0.run.mode.displayName)) \($0.run.runIndex)回目</div>
-                </div>
-                """
-            } ?? ""
-        ].joined(separator: "\n")
-
         let sections = orderedGroups.map { group in
             let maxDuration = max(group.runs.map(\.totalDuration).max() ?? 0, 0.001)
+            let average = group.runs.isEmpty ? 0.0 : group.runs.map(\.totalDuration).reduce(0, +) / Double(group.runs.count)
+            let fastest = group.runs.min(by: { $0.totalDuration < $1.totalDuration })
+            let slowest = group.runs.max(by: { $0.totalDuration < $1.totalDuration })
+
+            let summaryCards = [
+                """
+                <div class="card">
+                  <div class="eyebrow">AVERAGE</div>
+                  <div class="metric">\(formatSeconds(average))</div>
+                  <div class="caption">\(group.runs.count)回の平均合計時間</div>
+                </div>
+                """,
+                fastest.map {
+                    """
+                    <div class="card">
+                      <div class="eyebrow">BEST</div>
+                      <div class="metric">\(formatSeconds($0.totalDuration))</div>
+                      <div class="caption">\($0.run.runIndex)回目</div>
+                    </div>
+                    """
+                } ?? "",
+                slowest.map {
+                    """
+                    <div class="card">
+                      <div class="eyebrow">WORST</div>
+                      <div class="metric">\(formatSeconds($0.totalDuration))</div>
+                      <div class="caption">\($0.run.runIndex)回目</div>
+                    </div>
+                    """
+                } ?? ""
+            ].joined(separator: "\n")
 
             let runCards = group.runs.map { metric in
                 let topEntries = Array(metric.run.timingSummary.prefix(8))
@@ -474,6 +473,9 @@ private enum HTMLReportRenderer {
                 <h2>\(escapeHTML(group.mode.displayName))</h2>
                 <p>\(group.runs.count)回計測</p>
               </div>
+              <div class="mode-summary-grid">
+                \(summaryCards)
+              </div>
               <div class="comparison-card">
                 <h3>Run比較</h3>
                 \(comparisonRows)
@@ -541,15 +543,22 @@ private enum HTMLReportRenderer {
               font-size: 15px;
               line-height: 1.6;
             }
-            .meta-grid, .summary-grid {
+            .meta-grid {
               display: grid;
               grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
               gap: 16px;
               margin-top: 22px;
             }
+            .mode-summary-grid {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 16px;
+              margin: 0 0 16px;
+            }
             .card {
               border-radius: 22px;
               padding: 18px;
+              min-width: 0;
             }
             .eyebrow {
               text-transform: uppercase;
@@ -685,6 +694,9 @@ private enum HTMLReportRenderer {
             }
             @media (max-width: 720px) {
               .page { padding: 24px 14px 48px; }
+              .mode-summary-grid {
+                grid-template-columns: 1fr;
+              }
               .run-compare-row, .bar-row {
                 grid-template-columns: 1fr;
               }
@@ -711,17 +723,13 @@ private enum HTMLReportRenderer {
                 </div>
                 <div class="card">
                   <div class="eyebrow">実行日時</div>
-                  <div class="metric">\(escapeHTML(isoFormatter.string(from: report.executedAt)))</div>
+                  <div class="metric">\(escapeHTML(dateFormatter.string(from: report.executedAt)))</div>
                 </div>
                 <div class="card">
                   <div class="eyebrow">Xcode</div>
                   <div class="metric">\(escapeHTML(report.xcodeVersion))</div>
                 </div>
               </div>
-            </section>
-            <section class="summary-grid">
-              \(cards)
-              \(extremumCards)
             </section>
             \(sections)
           </main>

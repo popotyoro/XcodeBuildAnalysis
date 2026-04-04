@@ -2,6 +2,8 @@
 
 import Foundation
 
+// MARK: - CLI Entry Point
+
 struct XcodeBuildAnalysisCLI {
     static func main() {
         do {
@@ -13,7 +15,7 @@ struct XcodeBuildAnalysisCLI {
 
             let analyzer = XcodeBuildAnalyzer(configuration: configuration)
             let report = try analyzer.run()
-            try write(report: report, to: configuration.outputPath)
+            try write(report: report, configuration: configuration)
         } catch let error as CLIError {
             FileHandle.standardError.write(Data("error: \(error.message)\n\n\(usageText)".utf8))
             Foundation.exit(EXIT_FAILURE)
@@ -23,20 +25,31 @@ struct XcodeBuildAnalysisCLI {
         }
     }
 
-    private static func write(report: AnalysisReport, to outputPath: String?) throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        if #available(macOS 10.15, *) {
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        } else {
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    private static func write(report: AnalysisReport, configuration: CLIConfiguration) throws {
+        let data: Data
+        let message: String
+
+        switch configuration.outputFormat {
+        case .json:
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            if #available(macOS 10.15, *) {
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            } else {
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            }
+            data = try encoder.encode(report)
+            message = "JSON report written to"
+        case .html:
+            let html = HTMLReportRenderer.render(report: report)
+            data = Data(html.utf8)
+            message = "HTML report written to"
         }
 
-        let data = try encoder.encode(report)
-        if let outputPath {
+        if let outputPath = configuration.outputPath {
             let url = URL(fileURLWithPath: outputPath)
             try data.write(to: url)
-            FileHandle.standardError.write(Data("JSON report written to \(url.path)\n".utf8))
+            FileHandle.standardError.write(Data("\(message) \(url.path)\n".utf8))
         } else {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
@@ -58,20 +71,24 @@ struct XcodeBuildAnalysisCLI {
       --project, -p VALUE                Path to .xcodeproj
       --workspace, -w VALUE              Path to .xcworkspace
       --scheme, -s VALUE                 Scheme to build
+      --format, -f VALUE                 json | html, default: json
       --mode, -m VALUE                   both | clean | integration, default: both
       --runs, -n VALUE                   Number of measured runs, default: 3
       --compile-cache, -C VALUE          inherit | on | off, default: inherit
       --destination, -d VALUE            Simulator name or full xcodebuild destination
       --derived-data-path, -D VALUE      DerivedData output path
-      --output, -o VALUE                 JSON output path, default: stdout
+      --output, -o VALUE                 Output path, default: stdout
       --help, -h                         Show this help
     """
 }
+
+// MARK: - CLI Configuration
 
 private struct CLIConfiguration {
     let project: String?
     let workspace: String?
     let scheme: String?
+    let outputFormat: OutputFormat
     let mode: BuildMode
     let runs: Int
     let compileCacheMode: CompileCacheMode
@@ -84,6 +101,7 @@ private struct CLIConfiguration {
         var project: String?
         var workspace: String?
         var scheme: String?
+        var outputFormat = OutputFormat.json
         var mode = BuildMode.both
         var runs = 3
         var compileCacheMode = CompileCacheMode.inherit
@@ -109,6 +127,12 @@ private struct CLIConfiguration {
                 workspace = try value(after: &index, in: arguments, for: argument)
             case "--scheme", "-s":
                 scheme = try value(after: &index, in: arguments, for: argument)
+            case "--format", "-f":
+                let rawValue = try value(after: &index, in: arguments, for: argument)
+                guard let parsedFormat = OutputFormat(rawValue: rawValue) else {
+                    throw CLIError("invalid format: \(rawValue)")
+                }
+                outputFormat = parsedFormat
             case "--mode", "-m":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedMode = BuildMode(rawValue: rawValue) else {
@@ -145,6 +169,7 @@ private struct CLIConfiguration {
                 project: project,
                 workspace: workspace,
                 scheme: scheme,
+                outputFormat: outputFormat,
                 mode: mode,
                 runs: runs,
                 compileCacheMode: compileCacheMode,
@@ -169,6 +194,7 @@ private struct CLIConfiguration {
             project: project,
             workspace: workspace,
             scheme: scheme,
+            outputFormat: outputFormat,
             mode: mode,
             runs: runs,
             compileCacheMode: compileCacheMode,
@@ -207,24 +233,6 @@ private struct CLIConfiguration {
         return arguments
     }
 
-    var buildSettingsArguments: [String] {
-        var arguments: [String] = []
-        if let project {
-            arguments.append(contentsOf: ["-project", project])
-        }
-        if let workspace {
-            arguments.append(contentsOf: ["-workspace", workspace])
-        }
-        if let scheme {
-            arguments.append(contentsOf: ["-scheme", scheme])
-        }
-        if let destination {
-            arguments.append(contentsOf: ["-destination", normalizedDestination(destination)])
-        }
-        arguments.append("-showBuildSettings")
-        return arguments
-    }
-
     var selectedModes: [BuildMode] {
         switch mode {
         case .both:
@@ -252,6 +260,8 @@ private struct CLIConfiguration {
         return arguments[nextIndex]
     }
 }
+
+// MARK: - Build Execution
 
 private struct XcodeBuildAnalyzer {
     let configuration: CLIConfiguration
@@ -285,7 +295,6 @@ private struct XcodeBuildAnalyzer {
             project: configuration.project ?? configuration.workspace ?? "",
             executedAt: Date(),
             xcodeVersion: metadata.xcodeVersion,
-            sdkVersion: metadata.sdkVersion,
             scheme: configuration.scheme ?? "",
             runs: results
         )
@@ -310,11 +319,8 @@ private struct XcodeBuildAnalyzer {
 
     private func fetchMetadata() throws -> BuildMetadata {
         let xcodeVersionOutput = try runProcess(arguments: ["-version"])
-        let buildSettingsOutput = try runXcodebuild(arguments: configuration.buildSettingsArguments)
-
         return BuildMetadata(
-            xcodeVersion: parseXcodeVersion(from: xcodeVersionOutput),
-            sdkVersion: parseBuildSetting(named: "SDK_VERSION", from: buildSettingsOutput) ?? "unknown"
+            xcodeVersion: parseXcodeVersion(from: xcodeVersionOutput)
         )
     }
 
@@ -342,17 +348,416 @@ private struct XcodeBuildAnalyzer {
         return buildLine.isEmpty ? versionLine : "\(versionLine) (\(buildLine))"
     }
 
-    private func parseBuildSetting(named name: String, from output: String) -> String? {
-        let prefix = "\(name) = "
-        for line in output.split(separator: "\n").map(String.init) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix(prefix) {
-                return String(trimmed.dropFirst(prefix.count))
-            }
+}
+
+// MARK: - HTML Rendering
+
+private enum HTMLReportRenderer {
+    static func render(report: AnalysisReport) -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        let totals = report.runs.map { RunMetric(run: $0, totalDuration: $0.totalDurationSeconds) }
+        let groupedRuns = Dictionary(grouping: totals, by: { $0.run.mode })
+        let orderedGroups = BuildMode.displayOrder.compactMap { mode in
+            groupedRuns[mode].map { (mode: mode, runs: $0.sorted(by: { $0.run.runIndex < $1.run.runIndex })) }
         }
-        return nil
+
+        let fastest = totals.min(by: { $0.totalDuration < $1.totalDuration })
+        let slowest = totals.max(by: { $0.totalDuration < $1.totalDuration })
+
+        let cards = orderedGroups.map { group in
+            let average = group.runs.isEmpty ? 0.0 : group.runs.map(\.totalDuration).reduce(0, +) / Double(group.runs.count)
+            return """
+            <div class="card">
+              <div class="eyebrow">\(escapeHTML(group.mode.displayName))</div>
+              <div class="metric">\(formatSeconds(average))</div>
+              <div class="caption">Average total time across \(group.runs.count) run(s)</div>
+            </div>
+            """
+        }.joined(separator: "\n")
+
+        let extremumCards = [
+            fastest.map {
+                """
+                <div class="card">
+                  <div class="eyebrow">最速Run</div>
+                  <div class="metric">\(formatSeconds($0.totalDuration))</div>
+                  <div class="caption">\(escapeHTML($0.run.mode.displayName)) \($0.run.runIndex)回目</div>
+                </div>
+                """
+            } ?? "",
+            slowest.map {
+                """
+                <div class="card">
+                  <div class="eyebrow">最遅Run</div>
+                  <div class="metric">\(formatSeconds($0.totalDuration))</div>
+                  <div class="caption">\(escapeHTML($0.run.mode.displayName)) \($0.run.runIndex)回目</div>
+                </div>
+                """
+            } ?? ""
+        ].joined(separator: "\n")
+
+        let sections = orderedGroups.map { group in
+            let maxDuration = max(group.runs.map(\.totalDuration).max() ?? 0, 0.001)
+
+            let runCards = group.runs.map { metric in
+                let topEntries = Array(metric.run.timingSummary.prefix(8))
+                let topMax = max(topEntries.map(\.durationSeconds).max() ?? 0, 0.001)
+                let chartBars = topEntries.isEmpty
+                    ? "<p class=\"empty\">このrunでは timing summary を取得できませんでした。</p>"
+                    : topEntries.map { entry in
+                        let width = (entry.durationSeconds / topMax) * 100
+                        return """
+                        <div class="bar-row">
+                          <div class="bar-label">\(escapeHTML(entry.name))</div>
+                          <div class="bar-track"><div class="bar-fill" style="width: \(formatNumber(width))%;"></div></div>
+                          <div class="bar-value">\(formatSeconds(entry.durationSeconds))</div>
+                        </div>
+                        """
+                    }.joined(separator: "\n")
+
+                let tableRows = metric.run.timingSummary.isEmpty
+                    ? "<tr><td colspan=\"2\" class=\"empty-cell\">timing summary を取得できませんでした</td></tr>"
+                    : metric.run.timingSummary.map { entry in
+                        """
+                        <tr>
+                          <td>\(escapeHTML(entry.name))</td>
+                          <td class="numeric">\(formatSeconds(entry.durationSeconds))</td>
+                        </tr>
+                        """
+                    }.joined(separator: "\n")
+
+                return """
+                <article class="run-card" id="\(escapeHTML(metric.anchor))">
+                  <div class="run-header">
+                    <div>
+                      <h3>\(escapeHTML(metric.title))</h3>
+                      <p class="caption">Compile cache: \(escapeHTML(metric.run.compileCache.rawValue))</p>
+                    </div>
+                    <div class="total-pill">合計 \(formatSeconds(metric.totalDuration))</div>
+                  </div>
+                  <div class="chart-block">
+                    <h4>主要タスク</h4>
+                    \(chartBars)
+                  </div>
+                  <div class="table-block">
+                    <h4>Timing Summary</h4>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>タスク</th>
+                          <th class="numeric">秒</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        \(tableRows)
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+                """
+            }.joined(separator: "\n")
+
+            let comparisonRows = group.runs.map { metric in
+                let width = (metric.totalDuration / maxDuration) * 100
+                return """
+                <div class="run-compare-row">
+                  <a href="#\(escapeHTML(metric.anchor))" class="run-link">\(escapeHTML(metric.title))</a>
+                  <div class="compare-track"><div class="compare-fill" style="width: \(formatNumber(width))%;"></div></div>
+                  <div class="compare-value">\(formatSeconds(metric.totalDuration))</div>
+                </div>
+                """
+            }.joined(separator: "\n")
+
+            return """
+            <section class="mode-section">
+              <div class="section-heading">
+                <h2>\(escapeHTML(group.mode.displayName))</h2>
+                <p>\(group.runs.count)回計測</p>
+              </div>
+              <div class="comparison-card">
+                <h3>Run比較</h3>
+                \(comparisonRows)
+              </div>
+              <div class="runs-grid">
+                \(runCards)
+              </div>
+            </section>
+            """
+        }.joined(separator: "\n")
+
+        return """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Xcode Build Analysis</title>
+          <style>
+            :root {
+              --ink: #10212b;
+              --muted: #5c6c76;
+              --line: #d3dde3;
+              --paper: #f4efe7;
+              --panel: rgba(255,255,255,0.82);
+              --brand: #d55d3f;
+              --brand-soft: #f4c7b8;
+              --accent: #1f7a8c;
+              --shadow: 0 18px 45px rgba(16, 33, 43, 0.12);
+            }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+              color: var(--ink);
+              background:
+                radial-gradient(circle at top left, rgba(213, 93, 63, 0.18), transparent 30%),
+                radial-gradient(circle at top right, rgba(31, 122, 140, 0.16), transparent 28%),
+                linear-gradient(180deg, #fbf7f2, var(--paper));
+            }
+            .page {
+              max-width: 1280px;
+              margin: 0 auto;
+              padding: 40px 20px 64px;
+            }
+            .hero, .comparison-card, .run-card, .card {
+              background: var(--panel);
+              backdrop-filter: blur(12px);
+              border: 1px solid rgba(255,255,255,0.55);
+              box-shadow: var(--shadow);
+            }
+            .hero {
+              border-radius: 28px;
+              padding: 28px;
+              margin-bottom: 24px;
+            }
+            .hero h1 {
+              margin: 0 0 8px;
+              font-size: clamp(32px, 5vw, 54px);
+              letter-spacing: -0.03em;
+            }
+            .hero p {
+              margin: 0;
+              color: var(--muted);
+              font-size: 15px;
+              line-height: 1.6;
+            }
+            .meta-grid, .summary-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 16px;
+              margin-top: 22px;
+            }
+            .card {
+              border-radius: 22px;
+              padding: 18px;
+            }
+            .eyebrow {
+              text-transform: uppercase;
+              letter-spacing: 0.1em;
+              font-size: 11px;
+              color: var(--muted);
+              margin-bottom: 10px;
+            }
+            .metric {
+              font-size: 28px;
+              font-weight: 700;
+              letter-spacing: -0.03em;
+            }
+            .caption {
+              margin: 6px 0 0;
+              color: var(--muted);
+              font-size: 13px;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }
+            .mode-section {
+              margin-top: 36px;
+            }
+            .hero-copy {
+              display: none;
+            }
+            .section-heading {
+              display: flex;
+              justify-content: space-between;
+              gap: 12px;
+              align-items: baseline;
+              margin-bottom: 14px;
+            }
+            .section-heading h2 {
+              margin: 0;
+              font-size: 28px;
+            }
+            .section-heading p {
+              margin: 0;
+              color: var(--muted);
+            }
+            .comparison-card {
+              border-radius: 22px;
+              padding: 20px;
+              margin-bottom: 16px;
+            }
+            .comparison-card h3, .chart-block h4, .table-block h4 {
+              margin: 0 0 14px;
+              font-size: 16px;
+            }
+            .run-compare-row, .bar-row {
+              display: grid;
+              grid-template-columns: minmax(120px, 220px) 1fr 80px;
+              gap: 12px;
+              align-items: center;
+              margin-bottom: 10px;
+            }
+            .run-link {
+              color: var(--ink);
+              text-decoration: none;
+              font-weight: 600;
+            }
+            .compare-track, .bar-track {
+              background: rgba(16, 33, 43, 0.08);
+              border-radius: 999px;
+              overflow: hidden;
+              min-height: 12px;
+            }
+            .compare-fill {
+              min-height: 12px;
+              border-radius: 999px;
+              background: linear-gradient(90deg, var(--brand), #f08f74);
+            }
+            .bar-fill {
+              min-height: 10px;
+              border-radius: 999px;
+              background: linear-gradient(90deg, var(--accent), #58b6b3);
+            }
+            .compare-value, .bar-value, .numeric {
+              text-align: right;
+              font-variant-numeric: tabular-nums;
+            }
+            .runs-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+              gap: 18px;
+            }
+            .run-card {
+              border-radius: 24px;
+              padding: 20px;
+            }
+            .run-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: start;
+              gap: 12px;
+              margin-bottom: 18px;
+            }
+            .run-header h3 {
+              margin: 0 0 4px;
+              font-size: 22px;
+            }
+            .total-pill {
+              padding: 10px 14px;
+              border-radius: 999px;
+              background: rgba(213, 93, 63, 0.12);
+              color: var(--brand);
+              font-weight: 700;
+              white-space: nowrap;
+            }
+            .chart-block {
+              margin-bottom: 20px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 14px;
+            }
+            th, td {
+              padding: 10px 8px;
+              border-bottom: 1px solid var(--line);
+              vertical-align: top;
+            }
+            th {
+              text-align: left;
+              font-size: 12px;
+              color: var(--muted);
+              text-transform: uppercase;
+              letter-spacing: 0.06em;
+            }
+            .empty, .empty-cell {
+              color: var(--muted);
+            }
+            @media (max-width: 720px) {
+              .page { padding: 24px 14px 48px; }
+              .run-compare-row, .bar-row {
+                grid-template-columns: 1fr;
+              }
+              .compare-value, .bar-value, .numeric {
+                text-align: left;
+              }
+              .run-header {
+                flex-direction: column;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <main class="page">
+            <section class="hero">
+              <div class="eyebrow">Xcode Build Analysis</div>
+              <h1>\(escapeHTML(report.scheme))</h1>
+              <p class="hero-copy"></p>
+              <div class="meta-grid">
+                <div class="card">
+                  <div class="eyebrow">プロジェクト</div>
+                  <div class="metric">\(escapeHTML(lastPathComponent(report.project)))</div>
+                  <div class="caption">\(escapeHTML(report.project))</div>
+                </div>
+                <div class="card">
+                  <div class="eyebrow">実行日時</div>
+                  <div class="metric">\(escapeHTML(isoFormatter.string(from: report.executedAt)))</div>
+                </div>
+                <div class="card">
+                  <div class="eyebrow">Xcode</div>
+                  <div class="metric">\(escapeHTML(report.xcodeVersion))</div>
+                </div>
+              </div>
+            </section>
+            <section class="summary-grid">
+              \(cards)
+              \(extremumCards)
+            </section>
+            \(sections)
+          </main>
+        </body>
+        </html>
+        """
+    }
+
+    private static func escapeHTML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+    private static func formatSeconds(_ value: Double) -> String {
+        "\(formatNumber(value))s"
+    }
+
+    private static func formatNumber(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 3
+        formatter.minimumIntegerDigits = 1
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.3f", value)
+    }
+
+    private static func lastPathComponent(_ value: String) -> String {
+        URL(fileURLWithPath: value).lastPathComponent
     }
 }
+
+// MARK: - Build Timing Summary Parsing
 
 private enum BuildTimingSummaryParser {
     static func parse(from output: String) -> (entries: [TimingEntry], rawLines: [String]) {
@@ -423,10 +828,30 @@ private enum BuildTimingSummaryParser {
     }
 }
 
+// MARK: - Supporting Types
+
+private enum OutputFormat: String {
+    case json
+    case html
+}
+
 private enum BuildMode: String, Encodable {
     case both
     case clean
     case integration
+
+    static let displayOrder: [BuildMode] = [.clean, .integration]
+
+    var displayName: String {
+        switch self {
+        case .both:
+            return "両方"
+        case .clean:
+            return "Clean Build"
+        case .integration:
+            return "Integration Build"
+        }
+    }
 }
 
 private enum CompileCacheMode: String, Encodable {
@@ -451,20 +876,35 @@ private struct RunResult: Encodable {
     let runIndex: Int
     let compileCache: CompileCacheMode
     let timingSummary: [TimingEntry]
+
+    var totalDurationSeconds: Double {
+        timingSummary.map(\.durationSeconds).reduce(0, +)
+    }
 }
 
 private struct AnalysisReport: Encodable {
     let project: String
     let executedAt: Date
     let xcodeVersion: String
-    let sdkVersion: String
     let scheme: String
     let runs: [RunResult]
 }
 
+private struct RunMetric {
+    let run: RunResult
+    let totalDuration: Double
+
+    var title: String {
+        "\(run.mode.displayName) \(run.runIndex)回目"
+    }
+
+    var anchor: String {
+        "\(run.mode.rawValue)-run-\(run.runIndex)"
+    }
+}
+
 private struct BuildMetadata {
     let xcodeVersion: String
-    let sdkVersion: String
 }
 
 private struct TimingEntry: Encodable {

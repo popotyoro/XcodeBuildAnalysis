@@ -1,6 +1,6 @@
 # XcodeBuildAnalysis
 
-`xcodebuild` の clean build と integration build を複数回計測し、`Build Timing Summary` を JSON で出力する単一ファイルの Swift CLI です。
+`xcodebuild` の clean build と integration build を複数回計測し、`Build Timing Summary` を JSON または HTML で出力する単一ファイルの Swift CLI です。
 
 ## Run
 
@@ -14,12 +14,13 @@ swift xcode-build-analysis.swift --help
 swift xcode-build-analysis.swift \
   -w YourApp.xcworkspace \
   -s YourApp \
+  -f html \
   -m both \
   -n 3 \
   -C inherit \
   -d 'iPhone 17' \
   -D /tmp/DerivedData \
-  -o build-report.json
+  -o build-report.html
 ```
 
 ### 主な引数
@@ -27,6 +28,7 @@ swift xcode-build-analysis.swift \
 - `--project`, `-p`: `.xcodeproj`を指定
 - `--workspace`, `-w`: `.xcworkspace`を指定
 - `--scheme`, `-s`: ビルド対象scheme
+- `--format`, `-f`: `json` / `html`。デフォルトは `json`
 - `--mode`, `-m`: `both` / `clean` / `integration`。デフォルトは `both`
 - `--runs`, `-n`: 計測回数。デフォルトは `3`
 - `--compile-cache`, `-C`: `inherit` / `on` / `off`。デフォルトは `inherit`
@@ -51,7 +53,15 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
 
 ## Output
 
-出力JSONはトップレベルに実行 metadata を持ち、その中に run ごとの配列を持ちます。metadata には `project`、`executedAt`、`xcodeVersion`、`sdkVersion`、`scheme` を含みます。ビルド失敗時や要約が出なかった場合は、その run の `timingSummary` が空配列になります。
+`--format json` ではトップレベルに実行 metadata を持つ JSON を出力します。metadata には `project`、`executedAt`、`xcodeVersion`、`scheme` を含みます。ビルド失敗時や要約が出なかった場合は、その run の `timingSummary` が空配列になります。
+
+`--format html` では同じ `AnalysisReport` を人向けに可視化した HTML レポートを出力します。HTML には以下を含みます。
+
+- 実行 metadata のサマリ
+- clean / integration ごとの集計カード
+- run ごとの合計時間比較
+- 各 run の上位タスク棒グラフ
+- 各 run の full timing summary テーブル
 
 ### JSON例
 
@@ -73,7 +83,18 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
     }
   ],
   "scheme": "YourApp",
-  "sdkVersion": "26.4",
   "xcodeVersion": "Xcode 26.4 (Build version 17E192)"
 }
 ```
+
+### HTML例
+
+```bash
+swift xcode-build-analysis.swift \
+  -w YourApp.xcworkspace \
+  -s YourApp \
+  -f html \
+  -o build-report.html
+```
+
+JSON は機械処理向け、HTML は比較・閲覧向けです。元になる分析データは同じです。

@@ -3,27 +3,27 @@
 ## Purpose
 
 This repository provides a single-file Swift CLI for analyzing Xcode build bottlenecks.
-The CLI measures clean and integration builds with `xcodebuild` and outputs the parsed `Build Timing Summary` as JSON.
+The CLI measures clean and integration builds with `xcodebuild` and outputs the parsed `Build Timing Summary` as JSON or HTML.
 
 ## Current Implementation
 
 - Main entrypoint: `xcode-build-analysis.swift`
 - Execution style: standalone Swift script, not Swift Package Manager
-- Output format: JSON array of per-run objects
-- Each run object has:
-  - `mode`
-  - `runIndex`
-  - `compileCache`
-  - `timingSummary`
+- Shared data model: `AnalysisReport`
+- Supported output formats:
+  - `json`
+  - `html`
 
 ## CLI Contract
 
 - `--project` / `-p` or `--workspace` / `-w` is required
 - `--scheme` / `-s` is required
+- `--format` / `-f` defaults to `json`
 - `--mode` / `-m` defaults to `both`
 - `--runs` / `-n` defaults to `3`
 - `--compile-cache` / `-C` defaults to `inherit`
 - Supported optional flags:
+  - `--format` / `-f`
   - `--mode` / `-m`
   - `--runs` / `-n`
   - `--compile-cache` / `-C`
@@ -50,9 +50,11 @@ The CLI measures clean and integration builds with `xcodebuild` and outputs the 
 
 ## Output Rules
 
-- Output only per-run metadata plus parsed `Build Timing Summary`
-- Do not include full command, timestamps, raw logs, or exit code wrappers
-- If the timing summary is unavailable for a run, emit that run with `timingSummary: []`
+- JSON output uses the `AnalysisReport` structure directly
+- HTML output renders the same `AnalysisReport` for human viewing
+- Do not include full command, raw logs, or exit code wrappers
+- If the timing summary is unavailable for a run, emit that run with `timingSummary: []` and render it as empty in HTML
+- HTML must remain self-contained with inline CSS/JS and no external dependencies
 
 ## Parsing Rules
 
@@ -64,6 +66,7 @@ The CLI measures clean and integration builds with `xcodebuild` and outputs the 
 ## Repo Conventions
 
 - `DummyApp/` is for local testing only and must stay ignored
+- `DummyApp/` is the repository's measurement-only dummy app; do not inspect, analyze, or observe files under it unless the user explicitly asks you to
 - Keep the tool as a single Swift file unless explicitly asked to restructure
 - Keep README usage examples aligned with the real CLI behavior
 - Use Conventional Commits format for commit messages

@@ -375,24 +375,21 @@ private enum HTMLReportRenderer {
                 <div class="card">
                   <div class="eyebrow">AVERAGE</div>
                   <div class="metric">\(formatSeconds(average))</div>
-                  <div class="caption">\(group.runs.count)回の平均合計時間</div>
                 </div>
                 """,
                 fastest.map {
                     """
                     <div class="card">
-                      <div class="eyebrow">BEST</div>
+                      <div class="eyebrow">BEST | \($0.run.runIndex)回目の計測結果</div>
                       <div class="metric">\(formatSeconds($0.totalDuration))</div>
-                      <div class="caption">\($0.run.runIndex)回目</div>
                     </div>
                     """
                 } ?? "",
                 slowest.map {
                     """
                     <div class="card">
-                      <div class="eyebrow">WORST</div>
+                      <div class="eyebrow">WORST | \($0.run.runIndex)回目の計測結果</div>
                       <div class="metric">\(formatSeconds($0.totalDuration))</div>
-                      <div class="caption">\($0.run.runIndex)回目</div>
                     </div>
                     """
                 } ?? ""
@@ -429,28 +426,30 @@ private enum HTMLReportRenderer {
                 <article class="run-card" id="\(escapeHTML(metric.anchor))">
                   <div class="run-header">
                     <div>
-                      <h3>\(escapeHTML(metric.title))</h3>
+                      <h3>\(metric.run.runIndex)回目</h3>
                       <p class="caption">Compile cache: \(escapeHTML(metric.run.compileCache.rawValue))</p>
                     </div>
                     <div class="total-pill">合計 \(formatSeconds(metric.totalDuration))</div>
                   </div>
-                  <div class="chart-block">
-                    <h4>主要タスク</h4>
-                    \(chartBars)
-                  </div>
-                  <div class="table-block">
-                    <h4>Timing Summary</h4>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>タスク</th>
-                          <th class="numeric">秒</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        \(tableRows)
-                      </tbody>
-                    </table>
+                  <div class="run-content-stack">
+                    <div class="chart-block">
+                      <h4>主要タスク</h4>
+                      \(chartBars)
+                    </div>
+                    <div class="table-block">
+                      <h4>Timing Summary</h4>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>タスク</th>
+                            <th class="numeric">秒</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          \(tableRows)
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </article>
                 """
@@ -460,7 +459,7 @@ private enum HTMLReportRenderer {
                 let width = (metric.totalDuration / maxDuration) * 100
                 return """
                 <div class="run-compare-row">
-                  <a href="#\(escapeHTML(metric.anchor))" class="run-link">\(escapeHTML(metric.title))</a>
+                  <a href="#\(escapeHTML(metric.anchor))" class="run-link">\(metric.run.runIndex)回目</a>
                   <div class="compare-track"><div class="compare-fill" style="width: \(formatNumber(width))%;"></div></div>
                   <div class="compare-value">\(formatSeconds(metric.totalDuration))</div>
                 </div>
@@ -643,12 +642,17 @@ private enum HTMLReportRenderer {
             }
             .runs-grid {
               display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+              grid-template-columns: 1fr;
               gap: 18px;
             }
             .run-card {
               border-radius: 24px;
               padding: 20px;
+            }
+            .run-content-stack {
+              display: grid;
+              grid-template-columns: 1fr;
+              gap: 20px;
             }
             .run-header {
               display: flex;
@@ -670,7 +674,10 @@ private enum HTMLReportRenderer {
               white-space: nowrap;
             }
             .chart-block {
-              margin-bottom: 20px;
+              min-width: 0;
+            }
+            .table-block {
+              min-width: 0;
             }
             table {
               width: 100%;

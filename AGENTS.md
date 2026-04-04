@@ -52,6 +52,7 @@ The CLI measures clean and integration builds with `xcodebuild` and outputs the 
 
 - JSON output uses the `AnalysisReport` structure directly
 - HTML output renders the same `AnalysisReport` for human viewing
+- `AnalysisReport` includes mode-level stability summaries derived from run total durations
 - Do not include full command, raw logs, or exit code wrappers
 - If the timing summary is unavailable for a run, emit that run with `timingSummary: []` and render it as empty in HTML
 - HTML must remain self-contained with inline CSS/JS and no external dependencies

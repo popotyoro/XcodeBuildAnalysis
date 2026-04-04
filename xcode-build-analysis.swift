@@ -296,6 +296,7 @@ private struct XcodeBuildAnalyzer {
             executedAt: Date(),
             xcodeVersion: metadata.xcodeVersion,
             scheme: configuration.scheme ?? "",
+            stabilitySummaries: StabilityAnalyzer.summaries(for: results),
             runs: results
         )
     }
@@ -360,6 +361,7 @@ private enum HTMLReportRenderer {
         dateFormatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
         let totals = report.runs.map { RunMetric(run: $0, totalDuration: $0.totalDurationSeconds) }
         let groupedRuns = Dictionary(grouping: totals, by: { $0.run.mode })
+        let groupedStability = Dictionary(uniqueKeysWithValues: report.stabilitySummaries.map { ($0.mode, $0) })
         let orderedGroups = BuildMode.displayOrder.compactMap { mode in
             groupedRuns[mode].map { (mode: mode, runs: $0.sorted(by: { $0.run.runIndex < $1.run.runIndex })) }
         }
@@ -369,6 +371,7 @@ private enum HTMLReportRenderer {
             let average = group.runs.isEmpty ? 0.0 : group.runs.map(\.totalDuration).reduce(0, +) / Double(group.runs.count)
             let fastest = group.runs.min(by: { $0.totalDuration < $1.totalDuration })
             let slowest = group.runs.max(by: { $0.totalDuration < $1.totalDuration })
+            let stability = groupedStability[group.mode]
 
             let summaryCards = [
                 """
@@ -394,6 +397,36 @@ private enum HTMLReportRenderer {
                     """
                 } ?? ""
             ].joined(separator: "\n")
+
+            let stabilityCard = stability.map {
+                """
+                <div class="stability-card stability-\($0.status.rawValue)">
+                  <div class="stability-head">
+                    <div class="eyebrow">STABILITY</div>
+                    <div class="stability-badge">\($0.status.displayName)</div>
+                  </div>
+                  <div class="stability-grid">
+                    <div>
+                      <div class="stability-label">CV</div>
+                      <div class="stability-value">\(formatPercent($0.coefficientOfVariation))</div>
+                    </div>
+                    <div>
+                      <div class="stability-label">標準偏差</div>
+                      <div class="stability-value">\(formatSeconds($0.standardDeviationSeconds))</div>
+                    </div>
+                    <div>
+                      <div class="stability-label">平均</div>
+                      <div class="stability-value">\(formatSeconds($0.meanSeconds))</div>
+                    </div>
+                    <div>
+                      <div class="stability-label">サンプル数</div>
+                      <div class="stability-value">\($0.sampleCount)</div>
+                    </div>
+                  </div>
+                  <p class="stability-message">\(escapeHTML($0.message))</p>
+                </div>
+                """
+            } ?? ""
 
             let runCards = group.runs.map { metric in
                 let topEntries = Array(metric.run.timingSummary.prefix(8))
@@ -475,6 +508,7 @@ private enum HTMLReportRenderer {
               <div class="mode-summary-grid">
                 \(summaryCards)
               </div>
+              \(stabilityCard)
               <div class="comparison-card">
                 <h3>Run比較</h3>
                 \(comparisonRows)
@@ -604,16 +638,83 @@ private enum HTMLReportRenderer {
               padding: 20px;
               margin-bottom: 16px;
             }
+            .stability-card {
+              border-radius: 22px;
+              padding: 20px;
+              margin-bottom: 16px;
+              background: var(--panel);
+              backdrop-filter: blur(12px);
+              border: 1px solid rgba(255,255,255,0.55);
+              box-shadow: var(--shadow);
+            }
+            .stability-stable {
+              border-color: rgba(44, 138, 94, 0.28);
+            }
+            .stability-warning {
+              border-color: rgba(201, 139, 36, 0.28);
+            }
+            .stability-unstable {
+              border-color: rgba(176, 62, 62, 0.28);
+            }
             .comparison-card h3, .chart-block h4, .table-block h4 {
               margin: 0 0 14px;
               font-size: 16px;
             }
-            .run-compare-row, .bar-row {
+            .stability-head {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 14px;
+            }
+            .stability-badge {
+              border-radius: 999px;
+              padding: 8px 12px;
+              font-size: 12px;
+              font-weight: 700;
+              letter-spacing: 0.05em;
+              background: rgba(16, 33, 43, 0.08);
+            }
+            .stability-grid {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 12px;
+              margin-bottom: 12px;
+            }
+            .stability-label {
+              color: var(--muted);
+              font-size: 12px;
+              margin-bottom: 6px;
+            }
+            .stability-value {
+              font-size: 20px;
+              font-weight: 700;
+              letter-spacing: -0.02em;
+            }
+            .stability-message {
+              margin: 0;
+              color: var(--muted);
+              font-size: 14px;
+              line-height: 1.6;
+            }
+            .run-compare-row {
               display: grid;
               grid-template-columns: minmax(120px, 220px) 1fr 80px;
               gap: 12px;
               align-items: center;
               margin-bottom: 10px;
+            }
+            .bar-row {
+              display: grid;
+              grid-template-columns: minmax(280px, 420px) 1fr 80px;
+              gap: 12px;
+              align-items: center;
+              margin-bottom: 10px;
+            }
+            .bar-label {
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
             .run-link {
               color: var(--ink);
@@ -704,6 +805,9 @@ private enum HTMLReportRenderer {
               .mode-summary-grid {
                 grid-template-columns: 1fr;
               }
+              .stability-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+              }
               .run-compare-row, .bar-row {
                 grid-template-columns: 1fr;
               }
@@ -765,6 +869,10 @@ private enum HTMLReportRenderer {
         formatter.maximumFractionDigits = 3
         formatter.minimumIntegerDigits = 1
         return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.3f", value)
+    }
+
+    private static func formatPercent(_ value: Double) -> String {
+        "\(formatNumber(value * 100))%"
     }
 
     private static func lastPathComponent(_ value: String) -> String {
@@ -902,6 +1010,7 @@ private struct AnalysisReport: Encodable {
     let executedAt: Date
     let xcodeVersion: String
     let scheme: String
+    let stabilitySummaries: [StabilitySummary]
     let runs: [RunResult]
 }
 
@@ -925,6 +1034,88 @@ private struct BuildMetadata {
 private struct TimingEntry: Encodable {
     let name: String
     let durationSeconds: Double
+}
+
+private struct StabilitySummary: Encodable {
+    let mode: BuildMode
+    let sampleCount: Int
+    let meanSeconds: Double
+    let standardDeviationSeconds: Double
+    let coefficientOfVariation: Double
+    let status: StabilityStatus
+    let message: String
+}
+
+private enum StabilityStatus: String, Encodable {
+    case stable
+    case warning
+    case unstable
+
+    var displayName: String {
+        switch self {
+        case .stable:
+            return "安定"
+        case .warning:
+            return "注意"
+        case .unstable:
+            return "不安定"
+        }
+    }
+}
+
+private enum StabilityAnalyzer {
+    static func summaries(for runs: [RunResult]) -> [StabilitySummary] {
+        let groupedRuns = Dictionary(grouping: runs, by: \.mode)
+        return BuildMode.displayOrder.compactMap { mode in
+            guard let modeRuns = groupedRuns[mode], !modeRuns.isEmpty else {
+                return nil
+            }
+
+            let samples = modeRuns.map(\.totalDurationSeconds)
+            let mean = samples.reduce(0, +) / Double(samples.count)
+            let variance = samples.reduce(0.0) { partialResult, sample in
+                partialResult + pow(sample - mean, 2)
+            } / Double(samples.count)
+            let standardDeviation = sqrt(variance)
+            let coefficientOfVariation = mean > 0 ? standardDeviation / mean : 0
+
+            let status: StabilityStatus
+            if samples.count < 3 {
+                status = .warning
+            } else if coefficientOfVariation <= 0.05 {
+                status = .stable
+            } else if coefficientOfVariation <= 0.10 {
+                status = .warning
+            } else {
+                status = .unstable
+            }
+
+            return StabilitySummary(
+                mode: mode,
+                sampleCount: samples.count,
+                meanSeconds: mean,
+                standardDeviationSeconds: standardDeviation,
+                coefficientOfVariation: coefficientOfVariation,
+                status: status,
+                message: message(for: status, sampleCount: samples.count)
+            )
+        }
+    }
+
+    private static func message(for status: StabilityStatus, sampleCount: Int) -> String {
+        if sampleCount < 3 {
+            return "サンプル数が3未満のため参考値です。3回以上で再計測してください。"
+        }
+
+        switch status {
+        case .stable:
+            return "ばらつきは小さく、実務上は安定した計測結果とみなせます。"
+        case .warning:
+            return "ばらつきがやや大きい状態です。必要なら5回以上に増やして再評価してください。"
+        case .unstable:
+            return "ばらつきが大きいため、実行環境または計測手段を見直して再計測してください。"
+        }
+    }
 }
 
 private struct CLIError: Error {

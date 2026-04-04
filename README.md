@@ -53,15 +53,26 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
 
 ## Output
 
-`--format json` ではトップレベルに実行 metadata を持つ JSON を出力します。metadata には `project`、`executedAt`、`xcodeVersion`、`scheme` を含みます。ビルド失敗時や要約が出なかった場合は、その run の `timingSummary` が空配列になります。
+`--format json` ではトップレベルに実行 metadata を持つ JSON を出力します。metadata には `project`、`executedAt`、`xcodeVersion`、`scheme` に加えて mode ごとの `stabilitySummaries` を含みます。ビルド失敗時や要約が出なかった場合は、その run の `timingSummary` が空配列になります。
 
 `--format html` では同じ `AnalysisReport` を人向けに可視化した HTML レポートを出力します。HTML には以下を含みます。
 
 - 実行 metadata のサマリ
 - clean / integration ごとの集計カード
+- clean / integration ごとの stability 判定
 - run ごとの合計時間比較
 - 各 run の上位タスク棒グラフ
 - 各 run の full timing summary テーブル
+
+### Stability判定
+
+run ごとの合計時間を基準に、Coefficient of Variation (`CV = 標準偏差 / 平均`) で安定性を判定します。
+
+- `CV <= 5%`: 安定
+- `5% < CV <= 10%`: 注意
+- `CV > 10%`: 不安定
+
+3回未満の計測は参考値扱いです。ばらつきが大きい場合は、5回以上に増やして再評価することを推奨します。
 
 ### JSON例
 
@@ -69,6 +80,17 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
 {
   "executedAt": "2026-04-01T12:00:00Z",
   "project": "YourApp.xcworkspace",
+  "stabilitySummaries": [
+    {
+      "coefficientOfVariation": 0.032,
+      "meanSeconds": 32.4,
+      "message": "ばらつきは小さく、実務上は安定した計測結果とみなせます。",
+      "mode": "clean",
+      "sampleCount": 3,
+      "standardDeviationSeconds": 1.037,
+      "status": "stable"
+    }
+  ],
   "runs": [
     {
       "compileCache": "inherit",

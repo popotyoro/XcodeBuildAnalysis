@@ -54,7 +54,7 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
 
 ## Output
 
-`--format json` ではトップレベルに実行 metadata を持つ JSON を出力します。metadata には `project`、`executedAt`、`xcodeVersion`、`scheme` に加えて mode ごとの `stabilitySummaries` を含みます。ビルド失敗時や要約が出なかった場合は、その run の `timingSummary` が空配列になります。
+`--format json` ではトップレベルに実行 metadata を持つ JSON を出力します。metadata には `project`、`executedAt`、`xcodeVersion`、`scheme` に加えて mode ごとの `stabilitySummaries` を含みます。ビルドは成功しているが要約が出なかった場合は、その run の `timingSummary` が空配列になります。`xcodebuild` が失敗した場合は CLI 自体が非0で終了します。
 
 `--format html` では同じ `AnalysisReport` を人向けに可視化した HTML レポートを出力します。HTML には以下を含みます。
 
@@ -64,6 +64,7 @@ swiftc xcode-build-analysis.swift -o xcode-build-analysis
 - run ごとの合計時間比較
 - 各 run の上位タスク棒グラフ
 - 各 run の full timing summary テーブル
+- 既知の build task 名に対するマウスオーバー説明
 
 ### Stability判定
 

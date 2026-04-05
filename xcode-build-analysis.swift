@@ -17,7 +17,11 @@ struct XcodeBuildAnalysisCLI {
             let report = try analyzer.run()
             try write(report: report, configuration: configuration)
         } catch let error as CLIError {
-            FileHandle.standardError.write(Data("error: \(error.message)\n\n\(usageText)".utf8))
+            if error.showsUsage {
+                FileHandle.standardError.write(Data("error: \(error.message)\n\n\(usageText)".utf8))
+            } else {
+                FileHandle.standardError.write(Data("error: \(error.message)\n".utf8))
+            }
             Foundation.exit(EXIT_FAILURE)
         } catch {
             FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
@@ -118,7 +122,7 @@ private struct CLIConfiguration {
             let argument = arguments[index]
 
             if argument == "--" {
-                throw CLIError("pass-through arguments are not supported")
+                throw CLIError.usage("pass-through arguments are not supported")
             }
 
             switch argument {
@@ -133,19 +137,19 @@ private struct CLIConfiguration {
             case "--format", "-f":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedFormat = OutputFormat(rawValue: rawValue) else {
-                    throw CLIError("invalid format: \(rawValue)")
+                    throw CLIError.usage("invalid format: \(rawValue)")
                 }
                 outputFormat = parsedFormat
             case "--mode", "-m":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedMode = BuildMode(rawValue: rawValue) else {
-                    throw CLIError("invalid mode: \(rawValue)")
+                    throw CLIError.usage("invalid mode: \(rawValue)")
                 }
                 mode = parsedMode
             case "--runs", "-n":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedRuns = Int(rawValue), parsedRuns >= 1 else {
-                    throw CLIError("--runs must be an integer greater than or equal to 1")
+                    throw CLIError.usage("--runs must be an integer greater than or equal to 1")
                 }
                 runs = parsedRuns
             case "--skip-warm-up":
@@ -153,7 +157,7 @@ private struct CLIConfiguration {
             case "--compile-cache", "-C":
                 let rawValue = try value(after: &index, in: arguments, for: argument)
                 guard let parsedCacheMode = CompileCacheMode(rawValue: rawValue) else {
-                    throw CLIError("invalid compile cache mode: \(rawValue)")
+                    throw CLIError.usage("invalid compile cache mode: \(rawValue)")
                 }
                 compileCacheMode = parsedCacheMode
             case "--destination", "-d":
@@ -163,7 +167,7 @@ private struct CLIConfiguration {
             case "--output", "-o":
                 outputPath = try value(after: &index, in: arguments, for: argument)
             default:
-                throw CLIError("unknown argument: \(argument)")
+                throw CLIError.usage("unknown argument: \(argument)")
             }
 
             index += 1
@@ -187,13 +191,13 @@ private struct CLIConfiguration {
         }
 
         if project == nil && workspace == nil {
-            throw CLIError("either --project or --workspace is required")
+            throw CLIError.usage("either --project or --workspace is required")
         }
         if project != nil && workspace != nil {
-            throw CLIError("use only one of --project or --workspace")
+            throw CLIError.usage("use only one of --project or --workspace")
         }
         if scheme == nil {
-            throw CLIError("--scheme is required")
+            throw CLIError.usage("--scheme is required")
         }
 
         return CLIConfiguration(
@@ -261,7 +265,7 @@ private struct CLIConfiguration {
     private static func value(after index: inout Int, in arguments: [String], for option: String) throws -> String {
         let nextIndex = index + 1
         guard nextIndex < arguments.count else {
-            throw CLIError("missing value for \(option)")
+            throw CLIError.usage("missing value for \(option)")
         }
         index = nextIndex
         return arguments[nextIndex]
@@ -274,29 +278,31 @@ private struct XcodeBuildAnalyzer {
     let configuration: CLIConfiguration
 
     func run() throws -> AnalysisReport {
-        let metadata = try fetchMetadata()
+        let xcodeVersion = try fetchXcodeVersion()
         var results: [RunResult] = []
 
         for mode in configuration.selectedModes {
+            let warmUpArguments = configuration.baseXcodebuildArguments(includeClean: true)
+            let measuredArguments = configuration.baseXcodebuildArguments(includeClean: mode == .clean)
+
             if mode == .clean && !configuration.skipWarmUp {
-                _ = try runXcodebuild(arguments: configuration.baseXcodebuildArguments(includeClean: true))
+                _ = try runXcodebuild(arguments: warmUpArguments)
             }
 
             if mode == .integration {
-                _ = try runXcodebuild(arguments: configuration.baseXcodebuildArguments(includeClean: true))
+                _ = try runXcodebuild(arguments: warmUpArguments)
             }
 
             for runIndex in 1...configuration.runs {
-                let includeClean = mode == .clean
-                let output = try runXcodebuild(arguments: configuration.baseXcodebuildArguments(includeClean: includeClean))
-                let parsedSummary = BuildTimingSummaryParser.parse(from: output)
+                let output = try runXcodebuild(arguments: measuredArguments)
+                let entries = BuildTimingSummaryParser.parse(from: output)
 
                 results.append(
                     RunResult(
                         mode: mode,
                         runIndex: runIndex,
                         compileCache: configuration.compileCacheMode,
-                        timingSummary: parsedSummary.entries
+                        timingSummary: entries
                     )
                 )
             }
@@ -305,7 +311,7 @@ private struct XcodeBuildAnalyzer {
         return AnalysisReport(
             project: configuration.project ?? configuration.workspace ?? "",
             executedAt: Date(),
-            xcodeVersion: metadata.xcodeVersion,
+            xcodeVersion: xcodeVersion,
             scheme: configuration.scheme ?? "",
             stabilitySummaries: StabilityAnalyzer.summaries(for: results),
             runs: results
@@ -313,44 +319,24 @@ private struct XcodeBuildAnalyzer {
     }
 
     private func runXcodebuild(arguments: [String]) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
-        process.arguments = arguments
-
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-
-        try process.run()
-
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        return String(decoding: outputData, as: UTF8.self)
+        let result = try ProcessRunner.run(executablePath: "/usr/bin/xcodebuild", arguments: arguments)
+        guard result.exitCode == 0 else {
+            throw CLIError(processFailureMessage(for: result, command: "xcodebuild"))
+        }
+        return result.output
     }
 
-    private func fetchMetadata() throws -> BuildMetadata {
+    private func fetchXcodeVersion() throws -> String {
         let xcodeVersionOutput = try runProcess(arguments: ["-version"])
-        return BuildMetadata(
-            xcodeVersion: parseXcodeVersion(from: xcodeVersionOutput)
-        )
+        return parseXcodeVersion(from: xcodeVersionOutput)
     }
 
     private func runProcess(arguments: [String]) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
-        process.arguments = arguments
-
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-
-        try process.run()
-
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        return String(decoding: outputData, as: UTF8.self)
+        let result = try ProcessRunner.run(executablePath: "/usr/bin/xcodebuild", arguments: arguments)
+        guard result.exitCode == 0 else {
+            throw CLIError(processFailureMessage(for: result, command: "xcodebuild"))
+        }
+        return result.output
     }
 
     private func parseXcodeVersion(from output: String) -> String {
@@ -360,16 +346,42 @@ private struct XcodeBuildAnalyzer {
         return buildLine.isEmpty ? versionLine : "\(versionLine) (\(buildLine))"
     }
 
+    private func processFailureMessage(for result: ProcessRunner.Result, command: String) -> String {
+        let excerpt = result.output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .prefix(8)
+            .joined(separator: "\n")
+
+        if excerpt.isEmpty {
+            return "\(command) failed with exit code \(result.exitCode)"
+        }
+
+        return "\(command) failed with exit code \(result.exitCode)\n\(excerpt)"
+    }
+
 }
 
 // MARK: - HTML Rendering
 
 private enum HTMLReportRenderer {
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
+        return formatter
+    }()
+
+    private static let numberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 3
+        formatter.minimumIntegerDigits = 1
+        return formatter
+    }()
+
     static func render(report: AnalysisReport) -> String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dateFormatter.timeZone = TimeZone.current
-        dateFormatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
         let totals = report.runs.map { RunMetric(run: $0, totalDuration: $0.totalDurationSeconds) }
         let groupedRuns = Dictionary(grouping: totals, by: { $0.run.mode })
         let groupedStability = Dictionary(uniqueKeysWithValues: report.stabilitySummaries.map { ($0.mode, $0) })
@@ -379,7 +391,8 @@ private enum HTMLReportRenderer {
 
         let sections = orderedGroups.map { group in
             let maxDuration = max(group.runs.map(\.totalDuration).max() ?? 0, 0.001)
-            let average = group.runs.isEmpty ? 0.0 : group.runs.map(\.totalDuration).reduce(0, +) / Double(group.runs.count)
+            let totalDurations = group.runs.map(\.totalDuration)
+            let average = totalDurations.isEmpty ? 0.0 : totalDurations.reduce(0, +) / Double(totalDurations.count)
             let fastest = group.runs.min(by: { $0.totalDuration < $1.totalDuration })
             let slowest = group.runs.max(by: { $0.totalDuration < $1.totalDuration })
             let stability = groupedStability[group.mode]
@@ -448,7 +461,7 @@ private enum HTMLReportRenderer {
                         let width = (entry.durationSeconds / topMax) * 100
                         return """
                         <div class="bar-row">
-                          <div class="bar-label">\(escapeHTML(entry.name))</div>
+                          <div class="bar-label">\(renderTaskName(entry.name))</div>
                           <div class="bar-track"><div class="bar-fill" style="width: \(formatNumber(width))%;"></div></div>
                           <div class="bar-value">\(formatSeconds(entry.durationSeconds))</div>
                         </div>
@@ -460,7 +473,7 @@ private enum HTMLReportRenderer {
                     : metric.run.timingSummary.map { entry in
                         """
                         <tr>
-                          <td>\(escapeHTML(entry.name))</td>
+                          <td>\(renderTaskName(entry.name))</td>
                           <td class="numeric">\(formatSeconds(entry.durationSeconds))</td>
                         </tr>
                         """
@@ -723,9 +736,66 @@ private enum HTMLReportRenderer {
               margin-bottom: 10px;
             }
             .bar-label {
+              min-width: 0;
+            }
+            .task-name.has-tooltip {
+              position: relative;
+              display: inline-flex;
+              align-items: center;
+              max-width: 100%;
+              cursor: help;
+              text-decoration: underline dotted rgba(16, 33, 43, 0.35);
+              text-underline-offset: 0.18em;
+            }
+            .task-name-label {
+              display: inline-block;
+              max-width: 100%;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
+            }
+            .task-name.has-tooltip::after {
+              content: attr(data-tooltip);
+              position: absolute;
+              left: 0;
+              bottom: calc(100% + 10px);
+              width: min(360px, 72vw);
+              padding: 10px 12px;
+              border-radius: 12px;
+              background: rgba(16, 33, 43, 0.96);
+              color: #fff;
+              font-size: 12px;
+              line-height: 1.6;
+              letter-spacing: 0;
+              text-transform: none;
+              box-shadow: 0 16px 32px rgba(16, 33, 43, 0.22);
+              opacity: 0;
+              pointer-events: none;
+              transform: translateY(4px);
+              transition: opacity 140ms ease, transform 140ms ease;
+              white-space: normal;
+              z-index: 20;
+            }
+            .task-name.has-tooltip::before {
+              content: "";
+              position: absolute;
+              left: 14px;
+              bottom: calc(100% + 4px);
+              border-width: 6px;
+              border-style: solid;
+              border-color: rgba(16, 33, 43, 0.96) transparent transparent transparent;
+              opacity: 0;
+              pointer-events: none;
+              transform: translateY(4px);
+              transition: opacity 140ms ease, transform 140ms ease;
+              z-index: 20;
+            }
+            .task-name.has-tooltip:hover::after,
+            .task-name.has-tooltip:hover::before,
+            .task-name.has-tooltip:focus-visible::after,
+            .task-name.has-tooltip:focus-visible::before {
+              opacity: 1;
+              transform: translateY(0);
             }
             .run-link {
               color: var(--ink);
@@ -869,17 +939,20 @@ private enum HTMLReportRenderer {
             .replacingOccurrences(of: "'", with: "&#39;")
     }
 
+    private static func renderTaskName(_ value: String) -> String {
+        let escapedName = escapeHTML(value)
+        guard let description = TaskDescriptionProvider.description(for: value) else {
+            return escapedName
+        }
+        return "<span class=\"task-name has-tooltip\" tabindex=\"0\" data-tooltip=\"\(escapeHTML(description))\"><span class=\"task-name-label\">\(escapedName)</span></span>"
+    }
+
     private static func formatSeconds(_ value: Double) -> String {
         "\(formatNumber(value))s"
     }
 
     private static func formatNumber(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.minimumFractionDigits = 0
-        formatter.maximumFractionDigits = 3
-        formatter.minimumIntegerDigits = 1
-        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.3f", value)
+        numberFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.3f", value)
     }
 
     private static func formatPercent(_ value: Double) -> String {
@@ -894,11 +967,11 @@ private enum HTMLReportRenderer {
 // MARK: - Build Timing Summary Parsing
 
 private enum BuildTimingSummaryParser {
-    static func parse(from output: String) -> (entries: [TimingEntry], rawLines: [String]) {
+    static func parse(from output: String) -> [TimingEntry] {
         let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         guard let headerIndex = lines.lastIndex(where: { $0.contains("Build Timing Summary") }) else {
-            return ([], [])
+            return []
         }
 
         let candidateLines = Array(lines[(headerIndex + 1)...]).drop(while: { line in
@@ -907,21 +980,19 @@ private enum BuildTimingSummaryParser {
         })
 
         var entries: [TimingEntry] = []
-        var rawLines: [String] = []
 
         for line in candidateLines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 continue
             }
-            rawLines.append(trimmed)
 
             if let entry = parseLine(trimmed) {
                 entries.append(entry)
             }
         }
 
-        return (entries, rawLines)
+        return entries
     }
 
     private static func parseLine(_ line: String) -> TimingEntry? {
@@ -1029,17 +1100,9 @@ private struct RunMetric {
     let run: RunResult
     let totalDuration: Double
 
-    var title: String {
-        "\(run.mode.displayName) \(run.runIndex)回目"
-    }
-
     var anchor: String {
         "\(run.mode.rawValue)-run-\(run.runIndex)"
     }
-}
-
-private struct BuildMetadata {
-    let xcodeVersion: String
 }
 
 private struct TimingEntry: Encodable {
@@ -1055,6 +1118,68 @@ private struct StabilitySummary: Encodable {
     let coefficientOfVariation: Double
     let status: StabilityStatus
     let message: String
+}
+
+private enum TaskDescriptionProvider {
+    static func description(for taskName: String) -> String? {
+        switch normalizedName(for: taskName) {
+        case "SwiftDriver Compilation Requirements":
+            return "Swift compiler driver がコンパイル前に依存関係や実行条件を整理する前段処理です。"
+        case "SwiftDriver Compilation":
+            return "Swift compiler driver が compile job 群を起動・管理する処理です。"
+        case "SwiftDriver":
+            return "Swift compiler driver 自体の処理です。Swift の各コンパイル job やモジュール生成の段取りを調整します。"
+        case "SwiftCompile":
+            return "Swift ソースコードを実際にコンパイルする処理です。"
+        case "SwiftEmitModule":
+            return "Swift module を生成する処理です。モジュール情報や関連成果物を書き出します。"
+        case "Ld":
+            return "linker によるリンク処理です。object file やライブラリを最終バイナリにまとめます。"
+        case "CodeSign":
+            return "codesign による署名処理です。アプリや生成物に署名を付与します。"
+        case "AppIntentsSSUTraining":
+            return "App Intents を system experiences で利用するための追加生成処理です。"
+        case "CompileAssetCatalogVariant":
+            return "Asset Catalog を対象環境向けにコンパイルする処理です。画像や色、シンボルなどをビルド成果物に変換します。"
+        case "Copy":
+            return "生成物や依存ファイルをアプリ bundle などにコピーする処理です。"
+        case "CopySwiftLibs":
+            return "必要な Swift runtime ライブラリを生成物へコピーする処理です。"
+        case "ProcessInfoPlistFile":
+            return "Info.plist を最終生成物向けに処理する工程です。"
+        case "GenerateAssetSymbols":
+            return "Asset Catalog から参照用のシンボルやコード生成を行う処理です。"
+        case "WriteAuxiliaryFile":
+            return "ビルド中に必要な補助ファイルを書き出す処理です。"
+        case "ProcessProductPackagingDER":
+            return "署名や packaging に関連する DER 形式データを処理する工程です。"
+        case "Touch":
+            return "生成物のタイムスタンプ更新など、最終化の軽量処理です。"
+        case "LinkAssetCatalog":
+            return "コンパイル済み Asset Catalog を生成物へリンクする処理です。"
+        case "ConstructStubExecutorLinkFileList":
+            return "リンク用の stub executor ファイル一覧を構築する処理です。"
+        case "SwiftMergeGeneratedHeaders":
+            return "Swift 由来の生成ヘッダを統合する処理です。"
+        case "Validate":
+            return "生成物が配布・実行条件を満たすか検証する処理です。"
+        case "ProcessProductPackaging":
+            return "生成物の packaging 情報を処理する工程です。"
+        case "ExtractAppIntentsMetadata":
+            return "App Intents の metadata を抽出する処理です。"
+        case "RegisterExecutionPolicyException":
+            return "実行ポリシーに関する例外情報を登録する処理です。"
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedName(for taskName: String) -> String {
+        guard let range = taskName.range(of: " (") else {
+            return taskName
+        }
+        return String(taskName[..<range.lowerBound])
+    }
 }
 
 private enum StabilityStatus: String, Encodable {
@@ -1131,9 +1256,42 @@ private enum StabilityAnalyzer {
 
 private struct CLIError: Error {
     let message: String
+    let showsUsage: Bool
 
-    init(_ message: String) {
+    init(_ message: String, showsUsage: Bool = false) {
         self.message = message
+        self.showsUsage = showsUsage
+    }
+
+    static func usage(_ message: String) -> CLIError {
+        CLIError(message, showsUsage: true)
+    }
+}
+
+private enum ProcessRunner {
+    struct Result {
+        let output: String
+        let exitCode: Int32
+    }
+
+    static func run(executablePath: String, arguments: [String]) throws -> Result {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+
+        try process.run()
+
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        return Result(
+            output: String(decoding: outputData, as: UTF8.self),
+            exitCode: process.terminationStatus
+        )
     }
 }
 
